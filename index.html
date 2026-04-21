@@ -1,0 +1,1088 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Tuition Tracker">
+  <meta name="theme-color" content="#1A3C5E">
+  <meta name="description" content="Track children tuition fees, classes and payments">
+  <title>📚 Tuition Tracker</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%231A3C5E'/%3E%3Ctext y='80' x='10' font-size='75'%3E%F0%9F%93%9A%3C/text%3E%3C/svg%3E">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { height: 100%; }
+    body {
+      height: 100%;
+      background: #F0EDE6;
+      font-family: 'Nunito', 'Segoe UI', sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      overscroll-behavior-y: none;
+      -webkit-font-smoothing: antialiased;
+    }
+    #root { min-height: 100vh; min-height: 100dvh; }
+    input, button, select, textarea { font-family: inherit; }
+    ::-webkit-scrollbar { width: 3px; }
+    ::-webkit-scrollbar-thumb { background: #C7D7EA; border-radius: 2px; }
+    /* PWA install prompt */
+    #install-bar { display:none; position:fixed; bottom:80px; left:50%; transform:translateX(-50%); background:#1A3C5E; color:#fff; padding:12px 20px; border-radius:14px; font-size:13px; font-weight:700; z-index:300; box-shadow:0 4px 20px rgba(0,0,0,.2); max-width:400px; width:calc(100% - 32px); display:flex; align-items:center; gap:10px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+// ── Service Worker Registration ──
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js', { scope: './' })
+      .then(r => console.log('✅ SW registered:', r.scope))
+      .catch(e => console.log('SW not available (need HTTP server):', e.message));
+  });
+}
+
+// ── PWA Install Prompt ──
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  const bar = document.getElementById('install-bar');
+  if (bar) bar.style.display = 'flex';
+});
+window.installApp = async () => {
+  if (!deferredPrompt) return;
+  deferredPrompt.prompt();
+  const { outcome } = await deferredPrompt.userChoice;
+  deferredPrompt = null;
+  document.getElementById('install-bar').style.display = 'none';
+};
+</script>
+
+<!-- PWA Install Bar (shown by browser when installable) -->
+<div id="install-bar">
+  <span style="font-size:20px">📚</span>
+  <span style="flex:1">Add Tuition Tracker to Home Screen</span>
+  <button onclick="window.installApp()" style="background:#fff;color:#1A3C5E;border:none;border-radius:8px;padding:8px 14px;font-weight:800;font-size:13px;cursor:pointer">Install</button>
+  <button onclick="this.parentElement.style.display='none'" style="background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:8px;padding:8px 10px;font-weight:700;cursor:pointer">✕</button>
+</div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+// ═══════════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════════
+const SAVE_KEY = "tuition-pwa-v2";
+const REMIND_KEY = "tuition-remind";
+const uid = () => `_${Date.now()}${Math.random().toString(36).slice(2,6)}`;
+const MO = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const CHILD_COLORS = ["#E85D4A","#3B82F6","#8B5CF6","#10B981","#F59E0B","#EC4899","#0EA5E9","#84CC16"];
+const AVATARS = ["👦","👧","🧒","🌟","🎒","🦁","🐬","🦋","🐱","🐶","⭐","🚀","🎓","🌈"];
+const SUBJECTS = ["Mathematics","English","Science","Hindi","Sinhala","Tamil","Sanskrit","Physics","Chemistry","Biology","History","Geography","Computer","Music","Art","Dance","Sports","Other"];
+const FEE_TYPES = [
+  { id:"monthly",  label:"Monthly",     icon:"📅", desc:"Fixed fee each month" },
+  { id:"session",  label:"Per Session", icon:"🎯", desc:"Pay per class attended" },
+  { id:"term",     label:"Termly",      icon:"📚", desc:"One payment per term" },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// CURRENCIES — includes Sri Lankan Rupee
+// ═══════════════════════════════════════════════════════════════
+const CURRENCIES = [
+  { sym:"₨",  label:"Sri Lankan Rupee", locale:"en-LK", flag:"🇱🇰" },
+  { sym:"₹",  label:"Indian Rupee",     locale:"en-IN", flag:"🇮🇳" },
+  { sym:"$",  label:"US Dollar",        locale:"en-US", flag:"🇺🇸" },
+  { sym:"£",  label:"British Pound",    locale:"en-GB", flag:"🇬🇧" },
+  { sym:"€",  label:"Euro",             locale:"de-DE", flag:"🇪🇺" },
+  { sym:"¥",  label:"Japanese Yen",     locale:"ja-JP", flag:"🇯🇵" },
+  { sym:"৳",  label:"Bangladeshi Taka", locale:"bn-BD", flag:"🇧🇩" },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// LOCAL STORAGE — Chrome persistent, survives for years
+// ═══════════════════════════════════════════════════════════════
+function lsGet(key, def) {
+  try { const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : def; }
+  catch(e) { return def; }
+}
+function lsSet(key, val) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch(e) {}
+}
+
+function exportBackup(data) {
+  const blob = new Blob([JSON.stringify({ _v:2, _date:new Date().toISOString(), ...data }, null, 2)], { type:"application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `tuition-backup-${new Date().toISOString().slice(0,10)}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function readBackup(file, onOk, onErr) {
+  const r = new FileReader();
+  r.onload = e => {
+    try {
+      const p = JSON.parse(e.target.result);
+      if (!p.children || !p.classes || !p.payments) throw new Error("Not a valid backup");
+      const { _v, _date, ...clean } = p;
+      onOk(clean);
+    } catch(err) { onErr(err.message); }
+  };
+  r.readAsText(file);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════
+function getCurInfo(sym) { return CURRENCIES.find(c => c.sym === sym) || CURRENCIES[0]; }
+function fmt(n, sym) {
+  const info = getCurInfo(sym);
+  return sym + Number(n||0).toLocaleString(info.locale);
+}
+const mkKey    = (y,m) => `${y}-${String(m+1).padStart(2,"0")}`;
+const parseMK  = mk => { const [y,m] = mk.split("-"); return { year:+y, month:+m-1 }; };
+const mkLabel  = mk => { const {year,month} = parseMK(mk); return `${MO[month]} ${year}`; };
+const prevMK   = mk => { const {year,month} = parseMK(mk); const d = new Date(year,month-1); return mkKey(d.getFullYear(),d.getMonth()); };
+const nextMK   = mk => { const {year,month} = parseMK(mk); const d = new Date(year,month+1); return mkKey(d.getFullYear(),d.getMonth()); };
+const todayD   = new Date();
+const todayMK  = mkKey(todayD.getFullYear(), todayD.getMonth());
+const payId    = (cid,mk) => `${cid}__${mk}`;
+
+const EMPTY = { children:[], classes:[], payments:{}, budget:{ monthly:0 }, settings:{ currency:"₨" } };
+
+// ═══════════════════════════════════════════════════════════════
+// APP ROOT
+// ═══════════════════════════════════════════════════════════════
+function App() {
+  // Load synchronously from localStorage on first render
+  const [data, setData]         = useState(() => lsGet(SAVE_KEY, EMPTY));
+  const [screen, setScreen]     = useState("dashboard");
+  const [sub, setSub]           = useState(null);
+  const [modal, setModal]       = useState(null);
+  const [selMK, setSelMK]       = useState(todayMK);
+  const [flash, setFlash]       = useState(null);
+  const [showBanner, setShowBanner] = useState(false);
+
+  // Save to localStorage on every state change
+  useEffect(() => { lsSet(SAVE_KEY, data); }, [data]);
+
+  // Weekly backup reminder
+  useEffect(() => {
+    if (data.children.length === 0) return;
+    const last = lsGet(REMIND_KEY, 0);
+    if (Date.now() - last > 7*24*60*60*1000) setShowBanner(true);
+  }, []);
+
+  function showFlash(msg, type="ok") {
+    setFlash({ msg, type });
+    setTimeout(() => setFlash(null), 2400);
+  }
+
+  // ── All state mutations ──
+  const mut = {
+    addChild:  c    => setData(d => ({ ...d, children:[...d.children, { id:uid(), ...c }] })),
+    editChild: (id,u)=> setData(d => ({ ...d, children:d.children.map(c => c.id===id ? {...c,...u} : c) })),
+    delChild:  id   => setData(d => ({
+      ...d,
+      children: d.children.filter(c => c.id!==id),
+      classes:  d.classes.filter(cl => cl.childId!==id),
+      payments: Object.fromEntries(Object.entries(d.payments).filter(([,v]) => v.childId!==id))
+    })),
+    addClass:  cl   => setData(d => ({ ...d, classes:[...d.classes, { id:uid(), active:true, ...cl }] })),
+    editClass: (id,u)=> setData(d => ({ ...d, classes:d.classes.map(c => c.id===id ? {...c,...u} : c) })),
+    delClass:  id   => setData(d => ({
+      ...d,
+      classes:  d.classes.filter(c => c.id!==id),
+      payments: Object.fromEntries(Object.entries(d.payments).filter(([,v]) => v.classId!==id))
+    })),
+    markPaid: (classId, mk, pay) => {
+      const pk = payId(classId, mk);
+      const cls = data.classes.find(c => c.id===classId);
+      setData(d => ({ ...d, payments:{ ...d.payments, [pk]:{ id:pk, childId:cls.childId, classId, mk, ...pay, status:"paid" } } }));
+    },
+    unmark: (classId, mk) => {
+      const pk = payId(classId, mk);
+      setData(d => { const { [pk]:_, ...rest } = d.payments; return { ...d, payments:rest }; });
+    },
+    addSession: (classId, pay) => {
+      const pk = `${classId}__sess__${uid()}`;
+      const cls = data.classes.find(c => c.id===classId);
+      setData(d => ({ ...d, payments:{ ...d.payments, [pk]:{ id:pk, childId:cls.childId, classId, isSession:true, status:"paid", ...pay } } }));
+    },
+    setBudget:   m => setData(d => ({ ...d, budget:{ monthly:m } })),
+    setCurrency: c => setData(d => ({ ...d, settings:{ ...d.settings, currency:c } })),
+  };
+
+  // Compute dues for a given month key
+  function dues(mk) {
+    return data.classes.filter(c => c.active && c.feeType!=="session").map(cls => {
+      const pk    = payId(cls.id, mk);
+      const pmt   = data.payments[pk] || null;
+      const child = data.children.find(c => c.id===cls.childId);
+      const { year, month } = parseMK(mk);
+      const dueDate = cls.dueDay ? new Date(year, month, +cls.dueDay) : null;
+      const overdue = !pmt && dueDate && dueDate < todayD && mk <= todayMK;
+      return { cls, child, pmt, paid:!!pmt, overdue, dueDate };
+    });
+  }
+
+  const cur  = data.settings.currency;
+  const f    = n => fmt(n, cur);
+  const ctx  = {
+    data, f, cur, selMK, setSelMK, mut, modal, setModal,
+    screen, setScreen, sub, setSub, dues, todayMK, showFlash,
+    exportData: () => { exportBackup(data); showFlash("Backup downloaded ✓"); },
+    importData: file => readBackup(file, d => { setData(d); showFlash("Restored ✓"); }, e => showFlash(e,"err")),
+  };
+
+  const subChild = sub?.type==="child" ? data.children.find(c => c.id===sub.childId) : null;
+
+  return (
+    <div style={S.root}>
+      {/* ── Header ── */}
+      <div style={S.hdr}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          {sub && <button onClick={() => setSub(null)} style={S.backBtn}>‹</button>}
+          <div>
+            <div style={S.appTitle}>📚 Tuition Tracker</div>
+            <div style={S.appSub}>
+              {sub ? subChild?.name + "'s Classes"
+                   : { dashboard:"Monthly Overview", children:"All Children", history:"Payment History", budget:"Budget & Expenses" }[screen]}
+            </div>
+          </div>
+        </div>
+        <button onClick={() => setModal({ type:"settings" })} style={S.iconBtn}>⚙️</button>
+      </div>
+
+      {/* ── Backup Reminder Banner ── */}
+      {showBanner && (
+        <div style={S.backupBanner}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontWeight:800, fontSize:13 }}>💾 Weekly Backup Reminder</div>
+            <div style={{ fontSize:11, opacity:.85, marginTop:2 }}>Download backup to keep data safe across devices.</div>
+          </div>
+          <div style={{ display:"flex", gap:6 }}>
+            <button onClick={() => { ctx.exportData(); setShowBanner(false); lsSet(REMIND_KEY, Date.now()); }}
+              style={{ padding:"6px 12px", borderRadius:8, background:"#fff", color:"#1A3C5E", border:"none", fontWeight:800, fontSize:12, cursor:"pointer" }}>
+              Download
+            </button>
+            <button onClick={() => { setShowBanner(false); lsSet(REMIND_KEY, Date.now()); }}
+              style={{ padding:"6px 10px", borderRadius:8, background:"rgba(255,255,255,.2)", color:"#fff", border:"none", fontWeight:700, fontSize:12, cursor:"pointer" }}>
+              Later
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Page Content ── */}
+      <div style={S.page}>
+        {sub?.type==="child"    ? <ChildDetail ctx={ctx} childId={sub.childId} />
+         : screen==="dashboard" ? <Dashboard ctx={ctx} />
+         : screen==="children"  ? <Children  ctx={ctx} />
+         : screen==="history"   ? <History   ctx={ctx} />
+         : screen==="budget"    ? <Budget    ctx={ctx} />
+         : null}
+      </div>
+
+      {/* ── Bottom Nav ── */}
+      {!sub && (
+        <div style={S.nav}>
+          {[["dashboard","🏠","Home"],["children","👥","Children"],["history","📋","History"],["budget","💰","Budget"]].map(([id,ic,lb]) => (
+            <button key={id} onClick={() => setScreen(id)} style={{ ...S.navBtn, ...(screen===id ? S.navActive : {}) }}>
+              <span style={{ fontSize:22 }}>{ic}</span>
+              <span style={{ fontSize:10, fontWeight:700, marginTop:1 }}>{lb}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── Toast ── */}
+      {flash && <div style={{ ...S.toast, ...(flash.type==="err" ? { background:"#E85D4A" } : {}) }}>{flash.msg}</div>}
+
+      {/* ── Modal ── */}
+      {modal && <ModalRoot ctx={ctx} />}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════════
+function Dashboard({ ctx }) {
+  const { data, f, selMK, setSelMK, dues, setSub, setScreen, todayMK } = ctx;
+  const allDues = dues(selMK);
+  const totalDue    = allDues.reduce((s,x) => s + x.cls.amount, 0);
+  const totalPaid   = allDues.filter(x=>x.paid).reduce((s,x) => s + (x.pmt?.amount||x.cls.amount), 0);
+  const unpaidCount = allDues.filter(x=>!x.paid).length;
+  const overdueList = allDues.filter(x=>x.overdue);
+  const sessPayments = Object.values(data.payments).filter(p => p.isSession && p.mk===selMK);
+  const sessionTotal = sessPayments.reduce((s,p) => s + (p.amount||0), 0);
+  const grandPaid = totalPaid + sessionTotal;
+
+  const childSums = data.children.map(child => {
+    const childDues = allDues.filter(x => x.cls.childId===child.id);
+    const childSess = sessPayments.filter(p => p.childId===child.id);
+    const paid  = childDues.filter(x=>x.paid).length;
+    const total = childDues.length;
+    const amtDue  = childDues.reduce((s,x) => s + x.cls.amount, 0);
+    const amtPaid = childDues.filter(x=>x.paid).reduce((s,x) => s + (x.pmt?.amount||x.cls.amount), 0)
+                  + childSess.reduce((s,p) => s + p.amount, 0);
+    return { child, paid, total, amtDue, amtPaid, overdue:childDues.some(x=>x.overdue) };
+  }).filter(x => x.total>0 || data.classes.some(c => c.childId===x.child.id && c.feeType==="session"));
+
+  const budget = data.budget.monthly;
+  const pct    = budget>0 ? Math.min(100, Math.round(grandPaid/budget*100)) : 0;
+
+  if (data.children.length===0) return <EmptyState onAdd={() => setScreen("children")} />;
+
+  return (
+    <div>
+      <div style={S.monthRow}>
+        <button onClick={() => setSelMK(prevMK(selMK))} style={S.arrowBtn}>‹</button>
+        <div style={{ textAlign:"center" }}>
+          <div style={S.monthLabel}>{mkLabel(selMK)}</div>
+          {selMK===todayMK && <div style={S.todayBadge}>Current Month</div>}
+        </div>
+        <button onClick={() => setSelMK(nextMK(selMK))} style={S.arrowBtn}>›</button>
+      </div>
+
+      <div style={S.summaryCard}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:16 }}>
+          {[
+            { label:"Total Due", val:f(totalDue+sessionTotal), color:"#1A3C5E" },
+            { label:"Paid",      val:f(grandPaid),             color:"#16A34A" },
+            { label:"Remaining", val:f(Math.max(0,totalDue-totalPaid)), color:unpaidCount>0?"#E85D4A":"#9CA3AF" },
+          ].map((x,i) => (
+            <div key={i} style={{ textAlign:"center" }}>
+              <div style={{ fontSize:10, fontWeight:700, color:"#8A9BB0", letterSpacing:.5, textTransform:"uppercase", marginBottom:4 }}>{x.label}</div>
+              <div style={{ fontSize:15, fontWeight:800, color:x.color, fontFamily:"'DM Serif Display',serif" }}>{x.val}</div>
+            </div>
+          ))}
+        </div>
+        {budget>0 && (
+          <div>
+            <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:"#8A9BB0", marginBottom:4 }}>
+              <span>Budget: {f(budget)}</span><span>{pct}% used</span>
+            </div>
+            <div style={{ height:8, borderRadius:4, background:"#E8EDF5", overflow:"hidden" }}>
+              <div style={{ height:"100%", width:`${pct}%`, borderRadius:4, background:pct>=90?"#E85D4A":pct>=70?"#F59E0B":"#16A34A", transition:"width .4s" }} />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {overdueList.length>0 && (
+        <div style={S.alertCard}>
+          <div style={{ fontWeight:800, fontSize:13, marginBottom:6 }}>⚠️ Overdue ({overdueList.length})</div>
+          {overdueList.map(({ cls, child }) => (
+            <div key={cls.id} style={{ fontSize:12, padding:"4px 0", borderTop:"1px solid rgba(255,255,255,.2)" }}>
+              {child?.avatar} {child?.name} — {cls.subject} · Due day {cls.dueDay}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ fontSize:12, fontWeight:700, color:"#8A9BB0", letterSpacing:.5, textTransform:"uppercase", marginBottom:8 }}>Children</div>
+      {childSums.map(({ child, paid, total, amtDue, amtPaid, overdue }) => (
+        <button key={child.id} onClick={() => setSub({ type:"child", childId:child.id })}
+          style={{ ...S.childCard, borderLeft:`4px solid ${child.color}`, ...(overdue ? { boxShadow:"0 0 0 1.5px #E85D4A" } : {}) }}>
+          <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ fontSize:32, lineHeight:1 }}>{child.avatar}</div>
+            <div style={{ flex:1, textAlign:"left" }}>
+              <div style={{ fontWeight:800, fontSize:15, color:"#1A3C5E" }}>{child.name}</div>
+              <div style={{ fontSize:12, color:"#8A9BB0", marginTop:2 }}>{child.grade || "—"}</div>
+            </div>
+            <div style={{ textAlign:"right" }}>
+              <div style={{ fontWeight:800, fontSize:14, color:paid===total&&total>0?"#16A34A":"#1A3C5E" }}>{f(amtPaid)}</div>
+              <div style={{ fontSize:11, color:"#8A9BB0" }}>{f(amtDue)} due</div>
+            </div>
+          </div>
+          {total>0 && (
+            <div style={{ marginTop:10 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:"#8A9BB0", marginBottom:3 }}>
+                <span>{paid}/{total} classes paid</span>
+                {overdue && <span style={{ color:"#E85D4A", fontWeight:700 }}>OVERDUE</span>}
+              </div>
+              <div style={{ height:5, borderRadius:3, background:"#E8EDF5", overflow:"hidden" }}>
+                <div style={{ height:"100%", width:`${total>0?paid/total*100:0}%`, borderRadius:3, background:paid===total?"#16A34A":child.color, transition:"width .4s" }} />
+              </div>
+            </div>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CHILDREN LIST
+// ═══════════════════════════════════════════════════════════════
+function Children({ ctx }) {
+  const { data, setSub, setModal } = ctx;
+  return (
+    <div>
+      <button onClick={() => setModal({ type:"addChild" })} style={S.addBtn}>+ Add Child</button>
+      {data.children.length===0 && (
+        <div style={S.emptyBox}><div style={{ fontSize:48 }}>👨‍👩‍👧‍👦</div><div style={S.emptyTxt}>No children yet.</div></div>
+      )}
+      {data.children.map(child => {
+        const classes = data.classes.filter(c => c.childId===child.id && c.active);
+        return (
+          <div key={child.id} style={{ ...S.childCard, borderLeft:`4px solid ${child.color}` }}>
+            <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+              <div style={{ fontSize:34 }}>{child.avatar}</div>
+              <div style={{ flex:1 }}>
+                <div style={{ fontWeight:800, fontSize:16, color:"#1A3C5E" }}>{child.name}</div>
+                <div style={{ fontSize:12, color:"#8A9BB0" }}>{child.grade || "No grade set"}</div>
+                <div style={{ fontSize:12, color:"#8A9BB0", marginTop:2 }}>{classes.length} active class{classes.length!==1?"es":""}</div>
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                <button onClick={() => setSub({ type:"child", childId:child.id })} style={S.smBtn}>View</button>
+                <button onClick={() => setModal({ type:"editChild", child })} style={{ ...S.smBtn, background:"#F0F4FF", color:"#3B82F6" }}>Edit</button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CHILD DETAIL
+// ═══════════════════════════════════════════════════════════════
+function ChildDetail({ ctx, childId }) {
+  const { data, f, selMK, setSelMK, dues, setModal, mut, todayMK, showFlash } = ctx;
+  const child       = data.children.find(c => c.id===childId);
+  const classes     = data.classes.filter(c => c.childId===childId && c.active);
+  const allDues     = dues(selMK).filter(x => x.cls.childId===childId);
+  const sessClasses = classes.filter(c => c.feeType==="session");
+  const sessPayments= Object.values(data.payments).filter(p => p.childId===childId && p.isSession && p.mk===selMK);
+  const [tab, setTab] = useState("fees");
+  if (!child) return null;
+
+  return (
+    <div>
+      <div style={{ ...S.childHeaderCard, background:child.color }}>
+        <div style={{ fontSize:44 }}>{child.avatar}</div>
+        <div>
+          <div style={{ fontSize:22, fontWeight:800, color:"#fff", fontFamily:"'DM Serif Display',serif" }}>{child.name}</div>
+          <div style={{ fontSize:13, color:"rgba(255,255,255,.8)" }}>{child.grade || "No grade set"}</div>
+          <div style={{ fontSize:12, color:"rgba(255,255,255,.7)", marginTop:4 }}>{classes.length} class{classes.length!==1?"es":""}</div>
+        </div>
+        <button onClick={() => setModal({ type:"editChild", child })} style={S.editChildBtn}>✏️</button>
+      </div>
+
+      <div style={S.monthRow}>
+        <button onClick={() => setSelMK(prevMK(selMK))} style={S.arrowBtn}>‹</button>
+        <div style={{ textAlign:"center" }}>
+          <div style={S.monthLabel}>{mkLabel(selMK)}</div>
+          {selMK===todayMK && <div style={S.todayBadge}>Current Month</div>}
+        </div>
+        <button onClick={() => setSelMK(nextMK(selMK))} style={S.arrowBtn}>›</button>
+      </div>
+
+      <div style={S.tabs}>
+        {[["fees","💳 Fees"],["classes","📋 Classes"],["history","📜 History"]].map(([id,lb]) => (
+          <button key={id} onClick={() => setTab(id)} style={{ ...S.tab, ...(tab===id ? S.tabActive : {}) }}>{lb}</button>
+        ))}
+      </div>
+
+      {tab==="fees" && (
+        <div>
+          {allDues.length===0 && sessClasses.length===0 && (
+            <div style={S.emptyBox}>
+              <div style={{ fontSize:36 }}>💳</div>
+              <div style={S.emptyTxt}>No classes. Add a class first.</div>
+              <button onClick={() => setModal({ type:"addClass", childId })} style={{ ...S.addBtn, marginTop:12 }}>+ Add Class</button>
+            </div>
+          )}
+          {allDues.map(({ cls, pmt, paid, overdue, dueDate }) => (
+            <div key={cls.id} style={{ ...S.feeCard, borderLeft:overdue?"4px solid #E85D4A":paid?"4px solid #16A34A":`4px solid ${child.color}` }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontWeight:800, fontSize:15, color:"#1A3C5E" }}>{cls.subject}</div>
+                  <div style={{ fontSize:12, color:"#8A9BB0", marginTop:2 }}>👨‍🏫 {cls.tutor||"—"}{cls.tutorPhone?" · "+cls.tutorPhone:""}</div>
+                  {dueDate && <div style={{ fontSize:11, color:overdue?"#E85D4A":"#8A9BB0", fontWeight:overdue?700:400, marginTop:2 }}>
+                    📅 Due: {dueDate.toLocaleDateString("en-GB",{ day:"numeric", month:"short" })}{overdue?" ⚠️ OVERDUE":""}
+                  </div>}
+                  {pmt?.paidDate && <div style={{ fontSize:11, color:"#16A34A", marginTop:2 }}>
+                    ✅ Paid: {new Date(pmt.paidDate).toLocaleDateString("en-GB",{ day:"numeric", month:"short" })}
+                  </div>}
+                  {pmt?.note && <div style={{ fontSize:11, color:"#8A9BB0", marginTop:2, fontStyle:"italic" }}>"{pmt.note}"</div>}
+                </div>
+                <div style={{ textAlign:"right", marginLeft:12 }}>
+                  <div style={{ fontWeight:800, fontSize:16, color:"#1A3C5E", fontFamily:"'DM Serif Display',serif" }}>{f(pmt?.amount||cls.amount)}</div>
+                  <div style={{ marginTop:6 }}>
+                    {paid
+                      ? <button onClick={() => { mut.unmark(cls.id,selMK); showFlash("Unmarked"); }} style={S.paidBtn}>✓ Paid</button>
+                      : <button onClick={() => setModal({ type:"markPaid", cls, selMK })} style={S.unpaidBtn}>Mark Paid</button>
+                    }
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+          {sessClasses.map(cls => {
+            const clsSess = sessPayments.filter(p => p.classId===cls.id);
+            const total   = clsSess.reduce((s,p) => s+p.amount, 0);
+            return (
+              <div key={cls.id} style={{ ...S.feeCard, borderLeft:"4px solid #8B5CF6" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontWeight:800, fontSize:15, color:"#1A3C5E" }}>{cls.subject} <span style={{ fontSize:11, background:"#EDE9FE", color:"#7C3AED", borderRadius:4, padding:"2px 6px", marginLeft:4 }}>Per Session</span></div>
+                    <div style={{ fontSize:12, color:"#8A9BB0", marginTop:2 }}>👨‍🏫 {cls.tutor||"—"} · {f(cls.amount)}/session</div>
+                    <div style={{ fontSize:12, color:"#8A9BB0", marginTop:2 }}>{clsSess.length} session{clsSess.length!==1?"s":""} — {f(total)} this month</div>
+                  </div>
+                  <button onClick={() => setModal({ type:"logSession", cls, selMK })} style={{ ...S.unpaidBtn, background:"#EDE9FE", color:"#7C3AED", border:"1px solid #C4B5FD" }}>+ Session</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {tab==="classes" && (
+        <div>
+          <button onClick={() => setModal({ type:"addClass", childId })} style={S.addBtn}>+ Add Class</button>
+          {classes.length===0 && <div style={S.emptyBox}><div style={{ fontSize:36 }}>📖</div><div style={S.emptyTxt}>No classes yet.</div></div>}
+          {classes.map(cls => (
+            <div key={cls.id} style={{ ...S.feeCard, borderLeft:`4px solid ${child.color}` }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontWeight:800, fontSize:15, color:"#1A3C5E" }}>{cls.subject}</div>
+                  <div style={{ fontSize:12, color:"#8A9BB0", marginTop:3 }}>👨‍🏫 {cls.tutor||"No tutor"}{cls.tutorPhone?" · 📞 "+cls.tutorPhone:""}</div>
+                  <div style={{ fontSize:12, color:"#8A9BB0", marginTop:2 }}>
+                    {FEE_TYPES.find(ft=>ft.id===cls.feeType)?.icon} {f(cls.amount)} {cls.feeType==="monthly"?"/month":cls.feeType==="session"?"/session":"/term"}
+                    {cls.dueDay&&cls.feeType==="monthly"?` · Due: day ${cls.dueDay}`:""}
+                  </div>
+                  {cls.notes && <div style={{ fontSize:11, color:"#8A9BB0", marginTop:2, fontStyle:"italic" }}>"{cls.notes}"</div>}
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                  <button onClick={() => setModal({ type:"editClass", cls })} style={{ ...S.smBtn, background:"#F0F4FF", color:"#3B82F6" }}>Edit</button>
+                  <button onClick={() => { mut.delClass(cls.id); showFlash("Deleted"); }} style={{ ...S.smBtn, background:"#FFF0F0", color:"#E85D4A" }}>Del</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab==="history" && <ChildHistory ctx={ctx} childId={childId} />}
+    </div>
+  );
+}
+
+function ChildHistory({ ctx, childId }) {
+  const { data, f } = ctx;
+  const pmts = Object.values(data.payments)
+    .filter(p => p.childId===childId)
+    .sort((a,b) => (b.paidDate||b.mk) > (a.paidDate||a.mk) ? 1 : -1);
+  if (pmts.length===0) return <div style={S.emptyBox}><div style={{ fontSize:36 }}>📜</div><div style={S.emptyTxt}>No payment history yet.</div></div>;
+  return (
+    <div>
+      {pmts.map(p => {
+        const cls = data.classes.find(c => c.id===p.classId);
+        return (
+          <div key={p.id} style={{ ...S.histRow, borderLeft:"3px solid #16A34A" }}>
+            <div style={{ flex:1 }}>
+              <div style={{ fontWeight:700, fontSize:14, color:"#1A3C5E" }}>{cls?.subject||"—"}</div>
+              <div style={{ fontSize:11, color:"#8A9BB0" }}>{mkLabel(p.mk)}{p.isSession?` · ${p.sessions||1} session(s)`:""}</div>
+              {p.note && <div style={{ fontSize:11, color:"#8A9BB0", fontStyle:"italic" }}>"{p.note}"</div>}
+            </div>
+            <div style={{ textAlign:"right" }}>
+              <div style={{ fontWeight:800, color:"#16A34A", fontSize:15 }}>{f(p.amount)}</div>
+              <div style={{ fontSize:11, color:"#8A9BB0" }}>{p.paidDate ? new Date(p.paidDate).toLocaleDateString("en-GB",{day:"numeric",month:"short"}) : "—"}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// HISTORY (Global)
+// ═══════════════════════════════════════════════════════════════
+function History({ ctx }) {
+  const { data, f } = ctx;
+  const [filterChild, setFilterChild] = useState("all");
+  const [filterMK, setFilterMK]       = useState(todayMK);
+
+  const monthOpts = Array.from({ length:24 }, (_,i) => {
+    const d = new Date(todayD.getFullYear(), todayD.getMonth()-i);
+    return mkKey(d.getFullYear(), d.getMonth());
+  });
+
+  const pmts = useMemo(() =>
+    Object.values(data.payments)
+      .filter(p => (filterChild==="all"||p.childId===filterChild) && (filterMK==="all"||p.mk===filterMK))
+      .sort((a,b) => (b.paidDate||b.mk)>(a.paidDate||a.mk)?1:-1),
+    [data.payments, filterChild, filterMK]
+  );
+  const total = pmts.reduce((s,p) => s+(p.amount||0), 0);
+
+  return (
+    <div>
+      <div style={S.card}>
+        <div style={{ marginBottom:10 }}>
+          <div style={S.label}>Child</div>
+          <select value={filterChild} onChange={e=>setFilterChild(e.target.value)} style={S.select}>
+            <option value="all">All Children</option>
+            {data.children.map(c => <option key={c.id} value={c.id}>{c.avatar} {c.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={S.label}>Month</div>
+          <select value={filterMK} onChange={e=>setFilterMK(e.target.value)} style={S.select}>
+            <option value="all">All Months</option>
+            {monthOpts.map(m => <option key={m} value={m}>{mkLabel(m)}</option>)}
+          </select>
+        </div>
+      </div>
+      <div style={S.summaryCard}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <span style={{ fontSize:13, color:"#8A9BB0", fontWeight:700 }}>{pmts.length} payment{pmts.length!==1?"s":""}</span>
+          <span style={{ fontSize:18, fontWeight:800, color:"#16A34A", fontFamily:"'DM Serif Display',serif" }}>{f(total)}</span>
+        </div>
+      </div>
+      {pmts.length===0 && <div style={S.emptyBox}><div style={{ fontSize:40 }}>🗒️</div><div style={S.emptyTxt}>No payments found.</div></div>}
+      {pmts.map(p => {
+        const cls   = data.classes.find(c => c.id===p.classId);
+        const child = data.children.find(c => c.id===p.childId);
+        return (
+          <div key={p.id} style={{ ...S.histRow, borderLeft:`3px solid ${child?.color||"#16A34A"}` }}>
+            <div style={{ fontSize:22, marginRight:4 }}>{child?.avatar}</div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontWeight:700, fontSize:14, color:"#1A3C5E" }}>{child?.name} — {cls?.subject||"—"}</div>
+              <div style={{ fontSize:11, color:"#8A9BB0" }}>{mkLabel(p.mk)}{p.isSession?` · ${p.sessions||1} session(s)`:""}</div>
+              {p.note && <div style={{ fontSize:11, color:"#8A9BB0", fontStyle:"italic" }}>"{p.note}"</div>}
+            </div>
+            <div style={{ textAlign:"right" }}>
+              <div style={{ fontWeight:800, color:"#16A34A", fontSize:15 }}>{f(p.amount)}</div>
+              <div style={{ fontSize:11, color:"#8A9BB0" }}>{p.paidDate ? new Date(p.paidDate).toLocaleDateString("en-GB",{day:"numeric",month:"short"}) : "—"}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BUDGET
+// ═══════════════════════════════════════════════════════════════
+function Budget({ ctx }) {
+  const { data, f, mut, dues, showFlash } = ctx;
+  const [budgetInput, setBudgetInput] = useState(String(data.budget.monthly||""));
+  const [editing, setEditing]         = useState(false);
+
+  const months6 = Array.from({ length:6 }, (_,i) => {
+    const d = new Date(todayD.getFullYear(), todayD.getMonth()-(5-i));
+    return mkKey(d.getFullYear(), d.getMonth());
+  });
+
+  const monthData = months6.map(mk => {
+    const allDues = dues(mk);
+    const paid  = allDues.filter(x=>x.paid).reduce((s,x) => s+(x.pmt?.amount||x.cls.amount), 0);
+    const sessP = Object.values(data.payments).filter(p=>p.isSession&&p.mk===mk).reduce((s,p)=>s+p.amount,0);
+    return { mk, total:paid+sessP };
+  });
+  const maxSpend = Math.max(...monthData.map(m=>m.total), 1);
+  const budget   = data.budget.monthly;
+
+  const childSpend = data.children.map(child => {
+    const childDues = dues(todayMK).filter(x => x.cls.childId===child.id);
+    const paid = childDues.filter(x=>x.paid).reduce((s,x) => s+(x.pmt?.amount||x.cls.amount),0);
+    const sess = Object.values(data.payments).filter(p=>p.childId===child.id&&p.isSession&&p.mk===todayMK).reduce((s,p)=>s+p.amount,0);
+    const due  = childDues.reduce((s,x) => s+x.cls.amount, 0);
+    return { child, paid:paid+sess, due };
+  }).filter(x => x.due>0||x.paid>0);
+
+  const thisMonthTotal = childSpend.reduce((s,x)=>s+x.paid,0);
+
+  return (
+    <div>
+      <div style={S.card}>
+        <div style={S.label}>Monthly Budget</div>
+        {editing ? (
+          <div style={{ display:"flex", gap:8 }}>
+            <input value={budgetInput} onChange={e=>setBudgetInput(e.target.value)} style={S.input} type="number" autoFocus />
+            <button onClick={() => { mut.setBudget(+budgetInput); setEditing(false); showFlash("Budget saved!"); }}
+              style={{ ...S.paidBtn, padding:"0 16px", whiteSpace:"nowrap" }}>Save</button>
+          </div>
+        ) : (
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <div style={{ fontSize:24, fontWeight:800, color:"#1A3C5E", fontFamily:"'DM Serif Display',serif" }}>{budget ? f(budget) : "Not set"}</div>
+            <button onClick={() => setEditing(true)} style={{ ...S.smBtn, background:"#F0F4FF", color:"#3B82F6" }}>Edit</button>
+          </div>
+        )}
+      </div>
+
+      <div style={S.summaryCard}>
+        <div style={{ fontWeight:700, fontSize:12, color:"#8A9BB0", letterSpacing:.5, textTransform:"uppercase", marginBottom:12 }}>This Month — {mkLabel(todayMK)}</div>
+        {childSpend.map(({ child, paid, due }) => {
+          const pct = due>0 ? Math.min(100,paid/due*100) : 100;
+          return (
+            <div key={child.id} style={{ marginBottom:12 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, marginBottom:4 }}>
+                <span style={{ fontWeight:700, color:"#1A3C5E" }}>{child.avatar} {child.name}</span>
+                <span style={{ fontWeight:700, color:paid>=due&&due>0?"#16A34A":"#1A3C5E" }}>{f(paid)} / {f(due)}</span>
+              </div>
+              <div style={{ height:8, borderRadius:4, background:"#E8EDF5", overflow:"hidden" }}>
+                <div style={{ height:"100%", width:`${pct}%`, borderRadius:4, background:child.color, transition:"width .4s" }} />
+              </div>
+            </div>
+          );
+        })}
+        <div style={{ borderTop:"1px solid #E8EDF5", paddingTop:10, display:"flex", justifyContent:"space-between" }}>
+          <span style={{ fontWeight:700, color:"#8A9BB0" }}>Total Spent</span>
+          <span style={{ fontWeight:800, color:"#16A34A", fontSize:16, fontFamily:"'DM Serif Display',serif" }}>{f(thisMonthTotal)}</span>
+        </div>
+        {budget>0 && (
+          <div style={{ display:"flex", justifyContent:"space-between", marginTop:4 }}>
+            <span style={{ fontWeight:700, color:"#8A9BB0" }}>Remaining</span>
+            <span style={{ fontWeight:700, color:thisMonthTotal>budget?"#E85D4A":"#16A34A" }}>{f(Math.max(0,budget-thisMonthTotal))}</span>
+          </div>
+        )}
+      </div>
+
+      <div style={S.card}>
+        <div style={{ fontWeight:700, fontSize:12, color:"#8A9BB0", letterSpacing:.5, textTransform:"uppercase", marginBottom:14 }}>6-Month Trend</div>
+        <div style={{ display:"flex", alignItems:"flex-end", gap:8, height:100 }}>
+          {monthData.map(({ mk, total }) => {
+            const h    = total>0 ? Math.max(8,total/maxSpend*90) : 4;
+            const isNow = mk===todayMK;
+            return (
+              <div key={mk} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+                <div style={{ fontSize:9, color:"#8A9BB0", fontWeight:700 }}>{total>0?f(total):""}</div>
+                <div style={{ width:"100%", height:`${h}%`, borderRadius:6, background:isNow?"#1A3C5E":"#C7D7EA", minHeight:4, transition:"height .4s" }} />
+                <div style={{ fontSize:9, color:isNow?"#1A3C5E":"#8A9BB0", fontWeight:isNow?800:600, textAlign:"center" }}>{mkLabel(mk).split(" ")[0]}</div>
+              </div>
+            );
+          })}
+        </div>
+        {budget>0 && <div style={{ marginTop:8, fontSize:11, color:"#8A9BB0", textAlign:"center" }}>Budget: {f(budget)}/month</div>}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MODALS
+// ═══════════════════════════════════════════════════════════════
+function ModalRoot({ ctx }) {
+  const { modal } = ctx;
+  return (
+    <div style={S.overlay} onClick={() => ctx.setModal(null)}>
+      <div style={S.sheet} onClick={e => e.stopPropagation()}>
+        <div style={S.sheetHandle} />
+        {modal.type==="addChild"   && <AddChildForm ctx={ctx} />}
+        {modal.type==="editChild"  && <AddChildForm ctx={ctx} editing={modal.child} />}
+        {modal.type==="addClass"   && <AddClassForm ctx={ctx} childId={modal.childId} />}
+        {modal.type==="editClass"  && <AddClassForm ctx={ctx} editing={modal.cls} />}
+        {modal.type==="markPaid"   && <MarkPaidForm ctx={ctx} cls={modal.cls} selMK={modal.selMK} />}
+        {modal.type==="logSession" && <LogSessionForm ctx={ctx} cls={modal.cls} selMK={modal.selMK} />}
+        {modal.type==="settings"   && <SettingsForm ctx={ctx} />}
+      </div>
+    </div>
+  );
+}
+
+function AddChildForm({ ctx, editing }) {
+  const { mut, setModal, showFlash } = ctx;
+  const [name,   setName]   = useState(editing?.name   || "");
+  const [grade,  setGrade]  = useState(editing?.grade  || "");
+  const [avatar, setAvatar] = useState(editing?.avatar || AVATARS[0]);
+  const [color,  setColor]  = useState(editing?.color  || CHILD_COLORS[0]);
+
+  function save() {
+    if (!name.trim()) return;
+    editing ? mut.editChild(editing.id, { name:name.trim(), grade:grade.trim(), avatar, color })
+            : mut.addChild({ name:name.trim(), grade:grade.trim(), avatar, color });
+    showFlash(editing ? "Updated ✓" : name+" added ✓");
+    setModal(null);
+  }
+  function del() {
+    if (window.confirm("Delete "+editing.name+" and ALL their data?")) { mut.delChild(editing.id); setModal(null); showFlash("Deleted","err"); }
+  }
+
+  return (
+    <div>
+      <div style={S.mTitle}>{editing?"Edit Child":"Add Child"}</div>
+      <div style={S.label}>Name *</div>
+      <input value={name} onChange={e=>setName(e.target.value)} style={S.input} placeholder="Child's name" autoFocus />
+      <div style={S.label}>Grade / School</div>
+      <input value={grade} onChange={e=>setGrade(e.target.value)} style={S.input} placeholder="e.g. Grade 5, Royal College" />
+      <div style={S.label}>Avatar</div>
+      <div style={S.grid4}>{AVATARS.map(a => <button key={a} onClick={()=>setAvatar(a)} style={{ ...S.avatarBtn, ...(avatar===a?S.avatarBtnActive:{}) }}>{a}</button>)}</div>
+      <div style={S.label}>Color</div>
+      <div style={S.grid4}>{CHILD_COLORS.map(c => <button key={c} onClick={()=>setColor(c)} style={{ ...S.colorBtn, background:c, ...(color===c?{ boxShadow:`0 0 0 3px white, 0 0 0 5px ${c}` }:{}) }} />)}</div>
+      <button onClick={save} style={S.primaryBtn}>💾 {editing?"Save Changes":"Add Child"}</button>
+      {editing && <button onClick={del} style={S.dangerBtn}>🗑 Delete Child & All Data</button>}
+    </div>
+  );
+}
+
+function AddClassForm({ ctx, childId, editing }) {
+  const { mut, setModal, showFlash, cur } = ctx;
+  const cid = childId || editing?.childId;
+  const [subject,    setSubject]    = useState(editing?.subject    || "");
+  const [tutor,      setTutor]      = useState(editing?.tutor      || "");
+  const [tutorPhone, setTutorPhone] = useState(editing?.tutorPhone || "");
+  const [feeType,    setFeeType]    = useState(editing?.feeType    || "monthly");
+  const [amount,     setAmount]     = useState(String(editing?.amount || ""));
+  const [dueDay,     setDueDay]     = useState(String(editing?.dueDay || ""));
+  const [notes,      setNotes]      = useState(editing?.notes      || "");
+  const [customSub,  setCustomSub]  = useState(!SUBJECTS.includes(editing?.subject||"") && !!editing?.subject);
+
+  function save() {
+    if (!subject.trim()||!amount) return;
+    const cl = { childId:cid, subject:subject.trim(), tutor:tutor.trim(), tutorPhone:tutorPhone.trim(), feeType, amount:+amount, dueDay:dueDay?+dueDay:null, notes:notes.trim() };
+    editing ? mut.editClass(editing.id, cl) : mut.addClass(cl);
+    showFlash(editing?"Class updated ✓":subject+" added ✓");
+    setModal(null);
+  }
+
+  return (
+    <div>
+      <div style={S.mTitle}>{editing?"Edit Class":"Add Class"}</div>
+      <div style={S.label}>Subject *</div>
+      {!customSub ? (
+        <select value={subject} onChange={e => { if(e.target.value==="custom") setCustomSub(true); else setSubject(e.target.value); }} style={S.select}>
+          <option value="">Select subject…</option>
+          {SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}
+          <option value="custom">Other (type custom)…</option>
+        </select>
+      ) : (
+        <input value={subject} onChange={e=>setSubject(e.target.value)} style={S.input} placeholder="Custom subject" autoFocus />
+      )}
+      <div style={S.label}>Tutor / Teacher</div>
+      <input value={tutor} onChange={e=>setTutor(e.target.value)} style={S.input} placeholder="Tutor name" />
+      <div style={S.label}>Tutor Phone</div>
+      <input value={tutorPhone} onChange={e=>setTutorPhone(e.target.value)} style={S.input} placeholder="Phone number" type="tel" />
+      <div style={S.label}>Fee Type *</div>
+      <div style={{ display:"flex", gap:8, marginBottom:12 }}>
+        {FEE_TYPES.map(ft => (
+          <button key={ft.id} onClick={()=>setFeeType(ft.id)} style={{ flex:1, padding:"10px 4px", borderRadius:10, border:`2px solid ${feeType===ft.id?"#1A3C5E":"#E0E6ED"}`, background:feeType===ft.id?"#EBF0FF":"#F5F7FA", cursor:"pointer", fontSize:11, fontWeight:700, color:feeType===ft.id?"#1A3C5E":"#8A9BB0" }}>
+            <div style={{ fontSize:18 }}>{ft.icon}</div>{ft.label}
+          </button>
+        ))}
+      </div>
+      <div style={S.label}>Amount ({cur}) *</div>
+      <input value={amount} onChange={e=>setAmount(e.target.value)} style={S.input} placeholder="0" type="number" />
+      {feeType==="monthly" && (
+        <>
+          <div style={S.label}>Due Day of Month (1–28)</div>
+          <input value={dueDay} onChange={e=>setDueDay(e.target.value)} style={S.input} placeholder="e.g. 5 (for the 5th)" type="number" min="1" max="28" />
+        </>
+      )}
+      <div style={S.label}>Notes</div>
+      <input value={notes} onChange={e=>setNotes(e.target.value)} style={S.input} placeholder="Any notes…" />
+      <button onClick={save} disabled={!subject||!amount} style={{ ...S.primaryBtn, ...(!subject||!amount?{ opacity:.5 }:{}) }}>💾 {editing?"Save Changes":"Add Class"}</button>
+    </div>
+  );
+}
+
+function MarkPaidForm({ ctx, cls, selMK }) {
+  const { mut, setModal, showFlash, f, cur } = ctx;
+  const [amount, setAmount] = useState(String(cls.amount));
+  const [date,   setDate]   = useState(new Date().toISOString().split("T")[0]);
+  const [note,   setNote]   = useState("");
+
+  function save() {
+    mut.markPaid(cls.id, selMK, { amount:+amount, paidDate:date, note });
+    showFlash("Payment recorded ✓");
+    setModal(null);
+  }
+
+  return (
+    <div>
+      <div style={S.mTitle}>Mark as Paid</div>
+      <div style={{ ...S.summaryCard, marginBottom:16 }}>
+        <div style={{ fontWeight:800, fontSize:16, color:"#1A3C5E" }}>{cls.subject}</div>
+        <div style={{ fontSize:13, color:"#8A9BB0" }}>{mkLabel(selMK)}</div>
+      </div>
+      <div style={S.label}>Amount Paid ({cur})</div>
+      <input value={amount} onChange={e=>setAmount(e.target.value)} style={S.input} type="number" />
+      <div style={S.label}>Date Paid</div>
+      <input value={date} onChange={e=>setDate(e.target.value)} style={S.input} type="date" />
+      <div style={S.label}>Note (optional)</div>
+      <input value={note} onChange={e=>setNote(e.target.value)} style={S.input} placeholder="e.g. Paid via bank transfer" />
+      <button onClick={save} style={S.primaryBtn}>✅ Confirm Payment</button>
+    </div>
+  );
+}
+
+function LogSessionForm({ ctx, cls, selMK }) {
+  const { mut, setModal, showFlash, f } = ctx;
+  const [sessions, setSessions] = useState("1");
+  const [date,     setDate]     = useState(new Date().toISOString().split("T")[0]);
+  const [note,     setNote]     = useState("");
+  const total = (cls.amount||0) * (+sessions||0);
+
+  function save() {
+    mut.addSession(cls.id, { amount:total, paidDate:date, note, sessions:+sessions, mk:selMK });
+    showFlash(`${sessions} session(s) logged ✓`);
+    setModal(null);
+  }
+
+  return (
+    <div>
+      <div style={S.mTitle}>Log Sessions</div>
+      <div style={{ ...S.summaryCard, marginBottom:16 }}>
+        <div style={{ fontWeight:800, fontSize:16, color:"#1A3C5E" }}>{cls.subject}</div>
+        <div style={{ fontSize:13, color:"#8A9BB0" }}>{f(cls.amount)} per session · {mkLabel(selMK)}</div>
+      </div>
+      <div style={S.label}>Number of Sessions</div>
+      <div style={{ display:"flex", gap:6, marginBottom:12, flexWrap:"wrap" }}>
+        {[1,2,3,4,5,6,8,10,12].map(n => (
+          <button key={n} onClick={()=>setSessions(String(n))} style={{ flex:1, minWidth:40, padding:"10px 4px", borderRadius:8, border:`2px solid ${sessions===String(n)?"#1A3C5E":"#E0E6ED"}`, background:sessions===String(n)?"#EBF0FF":"#F5F7FA", fontWeight:800, fontSize:14, color:sessions===String(n)?"#1A3C5E":"#8A9BB0", cursor:"pointer" }}>{n}</button>
+        ))}
+      </div>
+      <div style={{ textAlign:"center", fontWeight:800, fontSize:20, color:"#16A34A", fontFamily:"'DM Serif Display',serif", marginBottom:12 }}>Total: {f(total)}</div>
+      <div style={S.label}>Date</div>
+      <input value={date} onChange={e=>setDate(e.target.value)} style={S.input} type="date" />
+      <div style={S.label}>Note (optional)</div>
+      <input value={note} onChange={e=>setNote(e.target.value)} style={S.input} placeholder="e.g. Extra exam prep class" />
+      <button onClick={save} style={S.primaryBtn}>✅ Log Sessions</button>
+    </div>
+  );
+}
+
+function SettingsForm({ ctx }) {
+  const { cur, mut, setModal, showFlash, exportData, importData, data } = ctx;
+  return (
+    <div>
+      <div style={S.mTitle}>⚙️ Settings</div>
+
+      <div style={S.label}>Currency</div>
+      <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:16 }}>
+        {CURRENCIES.map(c => (
+          <button key={c.sym} onClick={() => { mut.setCurrency(c.sym); showFlash("Currency: "+c.label); }}
+            style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 14px", borderRadius:12, border:`2px solid ${cur===c.sym?"#1A3C5E":"#E0E6ED"}`, background:cur===c.sym?"#EBF0FF":"#F5F7FA", cursor:"pointer", textAlign:"left" }}>
+            <span style={{ fontSize:22 }}>{c.flag}</span>
+            <div style={{ flex:1 }}>
+              <div style={{ fontWeight:700, fontSize:14, color:cur===c.sym?"#1A3C5E":"#6B7C93" }}>{c.label}</div>
+              <div style={{ fontSize:12, color:"#9AA5B4" }}>{c.sym} — {c.locale}</div>
+            </div>
+            {cur===c.sym && <span style={{ fontWeight:800, color:"#1A3C5E", fontSize:18 }}>✓</span>}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ height:1, background:"#E0E6ED", margin:"4px 0 16px" }} />
+      <div style={S.label}>📦 Data & Backup</div>
+
+      <div style={{ background:"#F0F7FF", borderRadius:12, padding:14, marginBottom:14, fontSize:13, color:"#1A3C5E", lineHeight:1.7 }}>
+        <strong>Storage: Chrome localStorage</strong><br/>
+        ✅ Saves automatically after every change<br/>
+        ✅ Persists indefinitely in Chrome on this device<br/>
+        ✅ Works 100% offline — no internet needed<br/>
+        ⚠️ Tied to this browser profile on this device<br/>
+        💡 Download .json backup to use on other devices or as a long-term archive
+      </div>
+
+      <div style={{ fontSize:12, color:"#8A9BB0", marginBottom:10 }}>
+        📊 {data.children.length} children · {data.classes.length} classes · {Object.keys(data.payments).length} payment records
+      </div>
+
+      <button onClick={exportData} style={{ ...S.primaryBtn, marginTop:0, marginBottom:10, background:"linear-gradient(135deg,#16A34A,#15803D)" }}>
+        ⬇️ Download Backup (.json)
+      </button>
+
+      <label style={{ display:"block", width:"100%", padding:"13px", borderRadius:12, background:"#FFF7ED", border:"2px dashed #F59E0B", color:"#92400E", fontWeight:700, fontSize:14, cursor:"pointer", textAlign:"center", marginBottom:6 }}>
+        ⬆️ Restore from Backup File
+        <input type="file" accept=".json" style={{ display:"none" }} onChange={e => {
+          if (!e.target.files[0]) return;
+          if (window.confirm("This replaces ALL current data with the backup. Continue?")) {
+            importData(e.target.files[0]);
+            setModal(null);
+          }
+        }} />
+      </label>
+      <div style={{ fontSize:11, color:"#8A9BB0", textAlign:"center" }}>Pick a .json file previously exported from this app</div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SHARED
+// ═══════════════════════════════════════════════════════════════
+function EmptyState({ onAdd }) {
+  return (
+    <div style={S.emptyBox}>
+      <div style={{ fontSize:60, marginBottom:12 }}>📚</div>
+      <div style={{ fontSize:20, fontWeight:800, color:"#1A3C5E", fontFamily:"'DM Serif Display',serif", marginBottom:8 }}>Welcome!</div>
+      <div style={{ fontSize:14, color:"#8A9BB0", textAlign:"center", lineHeight:1.6, marginBottom:20 }}>Track all your children's tuition fees in one place. Never miss a payment again.</div>
+      <button onClick={onAdd} style={S.primaryBtn}>👶 Add Your First Child</button>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// STYLES
+// ═══════════════════════════════════════════════════════════════
+const S = {
+  root:        { minHeight:"100vh", minHeight:"100dvh", background:"#F0EDE6", fontFamily:"'Nunito','Segoe UI',sans-serif", maxWidth:480, margin:"0 auto", color:"#1A3C5E", paddingBottom:80, position:"relative" },
+  hdr:         { background:"#1A3C5E", padding:"14px 16px 12px", display:"flex", justifyContent:"space-between", alignItems:"center", position:"sticky", top:0, zIndex:50, boxShadow:"0 2px 12px rgba(26,60,94,.25)" },
+  appTitle:    { fontSize:15, fontWeight:800, color:"#fff", letterSpacing:.5 },
+  appSub:      { fontSize:11, color:"rgba(255,255,255,.6)", fontWeight:600 },
+  backBtn:     { background:"rgba(255,255,255,.15)", border:"none", color:"#fff", fontSize:24, width:36, height:36, borderRadius:10, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:700 },
+  iconBtn:     { background:"rgba(255,255,255,.12)", border:"none", fontSize:18, width:38, height:38, borderRadius:10, cursor:"pointer" },
+  backupBanner:{ background:"linear-gradient(135deg,#1E4D7B,#2D5F96)", color:"#fff", padding:"12px 14px", display:"flex", alignItems:"center", gap:12 },
+  page:        { padding:"14px 14px 8px" },
+  nav:         { position:"fixed", bottom:0, left:"50%", transform:"translateX(-50%)", width:"100%", maxWidth:480, background:"#fff", borderTop:"1px solid #E0E6ED", display:"flex", padding:"8px 0 max(env(safe-area-inset-bottom),8px)", zIndex:50, boxShadow:"0 -4px 16px rgba(0,0,0,.06)" },
+  navBtn:      { flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:2, background:"none", border:"none", cursor:"pointer", padding:"4px 0", color:"#9CA3AF" },
+  navActive:   { color:"#1A3C5E" },
+  toast:       { position:"fixed", top:72, left:"50%", transform:"translateX(-50%)", background:"#16A34A", color:"#fff", padding:"10px 20px", borderRadius:10, fontWeight:700, fontSize:14, zIndex:200, boxShadow:"0 4px 16px rgba(0,0,0,.15)", maxWidth:340, textAlign:"center", whiteSpace:"nowrap" },
+  overlay:     { position:"fixed", inset:0, background:"rgba(0,0,0,.35)", zIndex:100, display:"flex", alignItems:"flex-end", justifyContent:"center", backdropFilter:"blur(4px)" },
+  sheet:       { width:"100%", maxWidth:480, background:"#fff", borderRadius:"20px 20px 0 0", padding:"12px 16px max(40px,env(safe-area-inset-bottom))", maxHeight:"90vh", overflowY:"auto" },
+  sheetHandle: { width:40, height:4, background:"#E0E6ED", borderRadius:2, margin:"0 auto 16px" },
+  mTitle:      { fontSize:18, fontWeight:800, color:"#1A3C5E", fontFamily:"'DM Serif Display',serif", marginBottom:16 },
+  card:        { background:"#fff", borderRadius:14, padding:"14px", marginBottom:12, boxShadow:"0 2px 8px rgba(0,0,0,.05)" },
+  summaryCard: { background:"linear-gradient(135deg,#fff 0%,#F0F5FF 100%)", borderRadius:14, padding:"16px", marginBottom:12, boxShadow:"0 2px 12px rgba(26,60,94,.08)", border:"1px solid #E0E8FF" },
+  alertCard:   { background:"linear-gradient(135deg,#E85D4A,#C0392B)", color:"#fff", borderRadius:14, padding:"14px", marginBottom:12, boxShadow:"0 4px 12px rgba(232,93,74,.3)" },
+  childCard:   { background:"#fff", borderRadius:14, padding:"14px", marginBottom:10, boxShadow:"0 2px 8px rgba(0,0,0,.05)", cursor:"pointer", border:"none", width:"100%", textAlign:"left", display:"block" },
+  childHeaderCard: { borderRadius:14, padding:"20px 16px", marginBottom:14, display:"flex", alignItems:"center", gap:14, position:"relative" },
+  editChildBtn:{ position:"absolute", top:12, right:12, background:"rgba(255,255,255,.25)", border:"none", borderRadius:8, padding:"6px 10px", cursor:"pointer", fontSize:14 },
+  feeCard:     { background:"#fff", borderRadius:14, padding:"14px", marginBottom:10, boxShadow:"0 2px 8px rgba(0,0,0,.05)" },
+  histRow:     { background:"#fff", borderRadius:12, padding:"12px 14px", marginBottom:8, boxShadow:"0 1px 4px rgba(0,0,0,.04)", display:"flex", alignItems:"center", gap:10 },
+  monthRow:    { display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14, background:"#fff", borderRadius:12, padding:"10px 12px", boxShadow:"0 2px 8px rgba(0,0,0,.05)" },
+  monthLabel:  { fontSize:16, fontWeight:800, color:"#1A3C5E" },
+  todayBadge:  { fontSize:10, color:"#16A34A", fontWeight:700, textTransform:"uppercase", letterSpacing:.5 },
+  arrowBtn:    { background:"#F0EDE6", border:"none", borderRadius:8, width:34, height:34, fontSize:20, cursor:"pointer", color:"#1A3C5E", fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center" },
+  tabs:        { display:"flex", gap:8, marginBottom:14 },
+  tab:         { flex:1, padding:"9px 4px", borderRadius:10, border:"1px solid #E0E6ED", background:"#F5F7FA", cursor:"pointer", fontSize:12, fontWeight:700, color:"#9CA3AF" },
+  tabActive:   { background:"#1A3C5E", color:"#fff", border:"1px solid #1A3C5E" },
+  addBtn:      { display:"block", width:"100%", padding:"13px", borderRadius:12, background:"#1A3C5E", color:"#fff", border:"none", fontWeight:800, fontSize:15, cursor:"pointer", marginBottom:12, fontFamily:"inherit" },
+  primaryBtn:  { display:"block", width:"100%", padding:"15px", borderRadius:12, background:"linear-gradient(135deg,#1A3C5E,#2D5F96)", color:"#fff", border:"none", fontWeight:800, fontSize:16, cursor:"pointer", marginTop:16, fontFamily:"inherit" },
+  dangerBtn:   { display:"block", width:"100%", padding:"13px", borderRadius:12, background:"#FFF0F0", color:"#E85D4A", border:"1px solid #FFCDD2", fontWeight:700, fontSize:14, cursor:"pointer", marginTop:8, fontFamily:"inherit" },
+  paidBtn:     { padding:"7px 14px", borderRadius:8, background:"#DCFCE7", color:"#16A34A", border:"1px solid #BBF7D0", fontWeight:800, fontSize:12, cursor:"pointer" },
+  unpaidBtn:   { padding:"7px 14px", borderRadius:8, background:"#EBF0FF", color:"#1A3C5E", border:"1px solid #C7D7F0", fontWeight:800, fontSize:12, cursor:"pointer" },
+  smBtn:       { padding:"6px 12px", borderRadius:8, background:"#F0EDE6", border:"none", fontSize:12, fontWeight:700, cursor:"pointer", color:"#1A3C5E" },
+  input:       { width:"100%", padding:"12px 14px", borderRadius:10, border:"1.5px solid #E0E6ED", background:"#F5F7FA", fontSize:15, color:"#1A3C5E", outline:"none", boxSizing:"border-box", marginBottom:10, fontFamily:"inherit" },
+  select:      { width:"100%", padding:"12px 14px", borderRadius:10, border:"1.5px solid #E0E6ED", background:"#F5F7FA", fontSize:15, color:"#1A3C5E", outline:"none", boxSizing:"border-box", marginBottom:10, fontFamily:"inherit", appearance:"none" },
+  label:       { fontSize:12, fontWeight:700, color:"#8A9BB0", letterSpacing:.5, textTransform:"uppercase", marginBottom:6, display:"block" },
+  grid4:       { display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, marginBottom:12 },
+  avatarBtn:   { fontSize:24, padding:"8px", borderRadius:10, border:"2px solid #E0E6ED", background:"#F5F7FA", cursor:"pointer" },
+  avatarBtnActive: { border:"2px solid #1A3C5E", background:"#EBF0FF" },
+  colorBtn:    { width:"100%", height:36, borderRadius:10, border:"none", cursor:"pointer" },
+  emptyBox:    { display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"48px 24px", textAlign:"center" },
+  emptyTxt:    { fontSize:14, color:"#8A9BB0", marginTop:8, lineHeight:1.6 },
+};
+
+// ── Mount ──
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(App));
+</script>
+</body>
+</html>
